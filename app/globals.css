@@ -279,6 +279,14 @@
     @apply flex min-h-screen w-full max-w-[420px] flex-col justify-center gap-5 py-10 md:gap-8;
   }
 
+  .flex-pair {
+    @apply flex gap-4 w-full
+  }
+
+  .flex-pair > * {
+    @apply flex-1
+  }
+
   .form-item {
     @apply flex flex-col gap-1.5;
   }
