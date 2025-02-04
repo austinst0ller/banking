@@ -24,6 +24,7 @@ import { authFormSchema } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { getLoggedInUser, signIn, signUp } from "@/lib/actions/user.actions";
+import PlaidLink from "./PlaidLink";
 
 const AuthForm = /*async*/ ({ type }: { type: string }) => {
   // we want to navigate to the home page if we successfully sign in
@@ -124,9 +125,11 @@ const AuthForm = /*async*/ ({ type }: { type: string }) => {
           </h1>
         </div>
       </header>
-      {user ? (
-          <div className="flex flex-col gap-4">{/* PlaidLink */}</div>
-        ) : (
+      {/* {user ? ( */}
+          <div className="flex flex-col gap-4">
+            <PlaidLink user={user} variant='primary' />
+          </div>
+        {/* ) : ( */}
           <>
             <Form {...form}>
               <form
@@ -222,7 +225,7 @@ const AuthForm = /*async*/ ({ type }: { type: string }) => {
               </Link>
             </footer>
           </>
-        )}
+        {/* )} */}
     </section>
   );
 };
