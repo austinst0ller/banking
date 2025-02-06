@@ -4,10 +4,18 @@ import { ID } from "node-appwrite";
 import { createAdminClient, createSessionClient } from "../appwrite";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { encryptId, parseStringify } from "../utils";
+import { encryptId, extractCustomerIdFromUrl, parseStringify } from "../utils";
 import { CountryCode, ProcessorTokenCreateRequest, ProcessorTokenCreateRequestProcessorEnum, Products } from "plaid";
 import { plaidClient } from "../plaid";
 import { revalidatePath } from "next/cache";
+import { addFundingSource, createDwollaCustomer } from "./dwolla.actions";
+
+// adding this so it's unneccessary to use 'process.env' everytime
+const {
+  APPWRITE_DATABASE_ID: DATABASE_ID,
+  APPWRITE_USER_COLLECTION_ID: USER_COLLECTION_ID,
+  APPWRITE_BANK_COLLECTION_ID: BANK_COLLECTION_ID,
+} = process.env;
 
 export const signIn = async ({ email, password }: signInProps) => {
   try {
@@ -35,20 +43,47 @@ export const signIn = async ({ email, password }: signInProps) => {
   }
 };
 
-export const signUp = async (userData: SignUpParams) => {
+export const signUp = async ({ password, ...userData }: SignUpParams) => {
   // destructure the userData
-  const { email, password, firstName, lastName } = userData;
+  const { email, firstName, lastName } = userData;
+
+  // what does it mean for a function to be atomic? an atomic transaction is one that either works or it doesn't—there's no in-between. we need to ensure that if it goes through, it goes to the end; and if it doesn't, it needs to fail.
+  // we can't create a user account to the session, and then not add the user to the database. or, we can't add a user to the database and then not connect them to Plaid. this account creation needs to run flawlessly in all three steps.
+  let newUserAccount
 
   try {
-    // use Appwrite to create a new user account
-    const { account } = await createAdminClient();
+    const { account, database } = await createAdminClient(); // use Appwrite to create a new user account
 
-    const newUserAccount = await account.create(
+    newUserAccount = await account.create(
       ID.unique(),
       email,
       password,
       `${firstName} ${lastName}`
     );
+
+    if(!newUserAccount) throw new Error("Error creating user");
+
+    const dwollaCustomerUrl = await createDwollaCustomer({
+      ...userData,
+      type: 'personal'
+    })
+
+    if(!dwollaCustomerUrl) throw new Error("Error creating Dwolla customer")
+
+    // now that we have the Dwolla customer URL, we have to extract the customer ID
+    const dwollaCustomerId = extractCustomerIdFromUrl(dwollaCustomerUrl)
+
+    const newUser = await database.createDocument(
+      DATABASE_ID!,
+      USER_COLLECTION_ID!,
+      ID.unique(),
+      {
+        ...userData,
+        userId: newUserAccount.$id,
+        dwollaCustomerId,
+        dwollaCustomerUrl,
+      }
+    )
 
     console.log("New user created:", newUserAccount); // Log the raw user object
     console.log("Serialized user object:", parseStringify(newUserAccount)); // Log the serialized version
@@ -56,8 +91,7 @@ export const signUp = async (userData: SignUpParams) => {
     const session = await account.createEmailPasswordSession(email, password);
 
     /*
-      The `cookies()` function returns a `Promise<ReadonlyRequestCookies>`only when used in server actions. You need to call `.set()` directly on the
-      resolved result if you make the function `async`
+      The `cookies()` function returns a `Promise<ReadonlyRequestCookies>`only when used in server actions. You need to call `.set()` directly on the resolved result if you make the function `async`
 
         cookies().set("my-custom-session", session.secret, {
         path: "/",
@@ -77,17 +111,10 @@ export const signUp = async (userData: SignUpParams) => {
       secure: true,
     });
 
-    // return both the user account and the response
     return {
-      newUser: parseStringify(newUserAccount), 
-      /*
-        response, // HTTP response if needed
-        ^^ returning 'response' like this will cause the function to fail bc the 'Response' object from 'NextResponse' can't be serialized and 
-          passed to the client directly from a server component (such as this user.actions.ts component).
-
-        Only return serializable data from server actions. The 'Response' object handles server side behaior (like setting cookies), so there is no need to return it.
-      */
-      success: true, // adding only for clarity
+      newUser: parseStringify(newUser), 
+      success: true, 
+      // wrapping return block in an object to give the client a clear response
     }
   } catch (error) {
     console.error("Error details:", error);
@@ -139,7 +166,7 @@ export const createLinkToken = async (user: User) => {
       user: {
         client_user_id: user.$id
       },
-      client_name: user.name,
+      client_name: `${user.firstName} ${user.lastName}`,
       products: ['auth'] as Products[],
       language: 'en',
       country_codes: ['US'] as CountryCode[],
@@ -150,6 +177,36 @@ export const createLinkToken = async (user: User) => {
     return parseStringify({ linkToken: response.data.link_token })
   } catch (error) {
     console.log("Error in createLinkToken", error)
+  }
+}
+
+export const createBankAccount = async ({
+  userId,
+  bankId,
+  accountId,
+  accessToken,
+  fundingSourceUrl,
+  shareableId,
+}: createBankAccountProps) => {
+  try {
+    // create a bank account—strictly—within Appwrite
+    const { database } = await createAdminClient()
+
+    const bankAccount = await database.createDocument(
+      DATABASE_ID!,
+      BANK_COLLECTION_ID!,
+      ID.unique(),
+      {
+        userId,
+        bankId,
+        accountId,
+        accessToken,
+        fundingSourceUrl,
+        shareableId,
+      }
+    )
+  } catch (error) {
+
   }
 }
 
@@ -182,14 +239,14 @@ export const exchangePublicToken = async ({ publicToken, user }: exchangePublicT
     // create a funding source URL for the account using the Dwolla customer ID,
     // processor token, and bank name
     // think of this as connecting the payment processing functionality to our specific bank account so it can send and recieve funds
-    const fundingSourcecUrl = await addFundingSource({
+    const fundingSourceUrl = await addFundingSource({
       dwollaCustomerId: user.dwollaCustomerId,
       processorToken,
       bankName: accountData.name,
     })
 
     // if the funding source URL is not created, throw an error
-    if (!fundingSourcecUrl) throw Error("Failed to create funding source URL")
+    if (!fundingSourceUrl) throw Error("Failed to create funding source URL")
 
     // create a bank account using user ID, item ID, account ID, access token, funding source URL, and sharable ID
     await createBankAccount({
@@ -197,8 +254,8 @@ export const exchangePublicToken = async ({ publicToken, user }: exchangePublicT
       bankId: itemId,
       accountId: accountData.account_id,
       accessToken,
-      fundingSourcecUrl,
-      sharableId: encryptId(accountData.account_id),
+      fundingSourceUrl,
+      shareableId: encryptId(accountData.account_id),
     })
 
     // revalidate the path to reflect the changes
