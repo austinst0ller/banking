@@ -1,9 +1,8 @@
 "use server";
 
-import { ID } from "node-appwrite";
+import { ID, Query } from "node-appwrite";
 import { createAdminClient, createSessionClient } from "../appwrite";
 import { cookies } from "next/headers";
-import { NextResponse } from "next/server";
 import { encryptId, extractCustomerIdFromUrl, parseStringify } from "../utils";
 import { CountryCode, ProcessorTokenCreateRequest, ProcessorTokenCreateRequestProcessorEnum, Products } from "plaid";
 import { plaidClient } from "../plaid";
@@ -16,6 +15,22 @@ const {
   APPWRITE_USER_COLLECTION_ID: USER_COLLECTION_ID,
   APPWRITE_BANK_COLLECTION_ID: BANK_COLLECTION_ID,
 } = process.env;
+
+export const getUserInfo = async ({ userId }: getUserInfoProps) => {
+  try {
+    const { database } = await createAdminClient()
+
+    const user = await database.listDocuments(
+      DATABASE_ID!,
+      USER_COLLECTION_ID!,
+      [Query.equal('userId', [userId])]
+    )
+
+    return parseStringify(user.documents[0])
+  } catch (error) {
+    console.log("Error in getBanks", error)
+  }
+}
 
 export const signIn = async ({ email, password }: signInProps) => {
   try {
@@ -32,12 +47,14 @@ export const signIn = async ({ email, password }: signInProps) => {
       {
         path: "/",
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: true,
         sameSite: "strict",
       }
     )
 
-    return { success: true }
+    const user = await getUserInfo({ userId: session.userId })
+
+    return parseStringify(user)
   } catch (error) {
     console.error("Error", error);
   }
@@ -85,31 +102,25 @@ export const signUp = async ({ password, ...userData }: SignUpParams) => {
       }
     )
 
-    console.log("New user created:", newUserAccount); // Log the raw user object
-    console.log("Serialized user object:", parseStringify(newUserAccount)); // Log the serialized version
-
     const session = await account.createEmailPasswordSession(email, password);
-
-    /*
-      The `cookies()` function returns a `Promise<ReadonlyRequestCookies>`only when used in server actions. You need to call `.set()` directly on the resolved result if you make the function `async`
-
-        cookies().set("my-custom-session", session.secret, {
+    (await cookies()).set(
+      "appwrite-session",
+      session.secret,
+      {
         path: "/",
         httpOnly: true,
         sameSite: "strict",
         secure: true,
-        });
+      }
+    );
 
-      We're going to set the cookie using NextResponse from `next/server`
-    */
-
-    const response = NextResponse.json({ success: true });
-    response.cookies.set("appwrite-session", session.secret, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "strict",
-      secure: true,
-    });
+    // const response = NextResponse.json({ success: true });
+    // response.cookies.set("appwrite-session", session.secret, {
+    //   path: "/",
+    //   httpOnly: true,
+    //   sameSite: "strict",
+    //   secure: true,
+    // });
 
     return {
       newUser: parseStringify(newUser), 
@@ -132,8 +143,9 @@ export async function getLoggedInUser() {
     console.log("Fetching logged-in user...")
     const { account } = await createSessionClient();
 
-    const user =  await account.get();
-    console.log("Logged-in user:", user)
+    const result =  await account.get();
+
+    const user = await getUserInfo({ userId: result.$id })
 
     return parseStringify(user) // ensure serializable data
   } catch (error: any) {
@@ -265,5 +277,37 @@ export const exchangePublicToken = async ({ publicToken, user }: exchangePublicT
     return parseStringify({ publicTokenExchange: 'complete' })
   } catch (error) {
     console.error("Error in exchangePublicToken", error)
+  }
+}
+
+export const getBanks = async ({ userId }: getBanksProps) =>  {
+  try {
+    const { database } = await createAdminClient()
+
+    const banks = await database.listDocuments(
+      DATABASE_ID!,
+      BANK_COLLECTION_ID!,
+      [Query.equal('userId', [userId])]
+    )
+
+    return parseStringify(banks.documents)
+  } catch (error) {
+    console.log("Error in getBanks", error)
+  }
+}
+
+export const getBank = async ({ documentId }: getBankProps) =>  {
+  try {
+    const { database } = await createAdminClient()
+
+    const bank = await database.listDocuments(
+      DATABASE_ID!,
+      BANK_COLLECTION_ID!,
+      [Query.equal('$id', [documentId])]
+    )
+
+    return parseStringify(bank.documents[0])
+  } catch (error) {
+    console.log("Error in getBanks", error)
   }
 }
