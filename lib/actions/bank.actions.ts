@@ -79,7 +79,6 @@ export const getAccount = async ({ appwriteItemId }: getAccountProps) => {
     const transferTransactionsData = await getTransactionsByBankId({
       bankId: bank.$id,
     });
-
     const transferTransactions = transferTransactionsData?.documents?.map(
       (transferData: Transaction) => ({
         id: transferData.$id,
@@ -97,13 +96,18 @@ export const getAccount = async ({ appwriteItemId }: getAccountProps) => {
       institutionId: accountsResponse.data.item.institution_id!,
     });
 
+    // get transactions from Plaid (updated function should return an array)
     const transactions = await getTransactions({
       accessToken: bank?.accessToken,
     });
 
-    if (!Array.isArray(transactions)) {
-      throw new Error("Transactions is not an array");
-    }
+    // Ensure we have an array for Plaid transactions
+    const plaidTransactions = Array.isArray(transactions) ? transactions : [];
+
+    // Merge and sort transactions by date (most recent first)
+    const sortedTransactions = [...plaidTransactions, ...transferTransactions].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
 
     const account = {
       id: accountData.account_id,
@@ -118,14 +122,9 @@ export const getAccount = async ({ appwriteItemId }: getAccountProps) => {
       appwriteItemId: bank.$id,
     };
 
-    // sort transactions by date such that the most recent transaction is first
-      const allTransactions = [...transactions, ...transferTransactions].sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-
     return parseStringify({
       data: account,
-      transactions: allTransactions,
+      transactions: sortedTransactions,
     });
   } catch (error) {
     console.error("An error occurred while getting the account:", error);
@@ -151,42 +150,59 @@ export const getInstitution = async ({
 };
 
 // Get transactions
-export const getTransactions = async ({
-  accessToken,
-}: getTransactionsProps) => {
+export const getTransactions = async ({ accessToken }: getTransactionsProps) => {
   let hasMore = true;
-  let transactions: any = [];
+  let allTransactions: any[] = [];
+  let cursor: string = '' // start w empty cursor
+  const count = 100
 
   try {
     // Iterate through each page of new transaction updates for item
     while (hasMore) {
       const response = await plaidClient.transactionsSync({
         access_token: accessToken,
+        cursor,
+        count
       });
 
-      const data = response.data;
+      const data = response.data
 
-      transactions = [
-        ...transactions,
-        ...data.added.map((transaction) => ({
+      // Log the raw response for debugging.
+      console.log("Plaid transactionsSync response:", data)
+
+      // Check if Plaid returned an error in the response body.
+      if ('error' in data) {
+        console.error("Error in transactionsSync response:", (data as any).error);
+        break;
+      }
+
+      if (Array.isArray(data.added)) {
+        const addedTransactions = data.added.map((transaction) => ({
           id: transaction.transaction_id,
           name: transaction.name,
           paymentChannel: transaction.payment_channel,
-          type: transaction.payment_channel,
+          type: transaction.payment_channel, // adjust if needed
           accountId: transaction.account_id,
           amount: transaction.amount,
           pending: transaction.pending,
-          category: transaction.category ? transaction.category[0] : "",
+          category: Array.isArray(transaction.category) ? transaction.category[0] : "",
           date: transaction.date,
           image: transaction.logo_url,
-        })),
-      ];
+        }));
 
-      hasMore = data.has_more;
+        allTransactions = allTransactions.concat(addedTransactions);
+      } else {
+        console.error("Unexpected transactions format:", data);
+        break;
+      }
+
+      cursor = data.next_cursor || "";
+      hasMore = data.has_more || false
     }
-
-    return parseStringify(transactions);
+    // Ensure we always return an array
+    return Array.isArray(allTransactions) ? parseStringify(allTransactions) : []
   } catch (error) {
-    console.error("An error occurred while getting the accounts:", error);
+    console.error("An error occurred while getting the accounts:", error)
+    return []
   }
 };

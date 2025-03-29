@@ -5,9 +5,11 @@ import TotalBalanceBox from '@/components/TotalBalanceBox'
 import { getAccount, getAccounts } from '@/lib/actions/bank.actions'
 import { getLoggedInUser } from '@/lib/actions/user.actions'
 
-const Home = async ({ searchParams: { id, page } }: SearchParamProps) => {
+const Home = async ( props: SearchParamProps) => {
   // If needed, you can "await" some asynchronous resolution of searchParams.
   // Often, simply not destructuring them in the function signature resolves the issue.
+  const sp = await Promise.resolve(props.searchParams)
+  const { id, page } = sp
 
   const currentPage = Number(page as string) || 1
   const loggedIn = await getLoggedInUser()
